@@ -31,8 +31,10 @@ Plotly.prototype.stream = function(opts, callback) {
     headers: { "plotly-streamtoken" : opts.token }
   };
 
-  var stream = http.request(options, function(response) {
-               });
+  var stream = http.request(options, function (res) {
+                 parseRes(res, function (err, body) {
+
+                 });
   if (stream.setTimeout) stream.setTimeout(Math.pow(2, 32) * 1000);
   callback(null, stream);
   return this;
@@ -84,46 +86,37 @@ Plotly.prototype.plot = function(data, layout, callback) {
     }
   };
 
-  var req = http.request(options, function(res) {
-     var body = ""
-     res.setEncoding('utf8')
-     res.on('data', function (chunk) {
-           body += chunk
-     });
-     res.on('end', function (chunk) {
-       if (chunk)
-         body += chunk;
-       // TODO:
-       // parse the body for plotly errors
-       // and format accordingly.
-       // IN PARTICULAR LOOK FOR ALL STREAMS GO
-       // THEN SET A msg.streams = true... so we
-       // can programatically take action...
-       var msg = {
-         err: ""
-       , message: body
-       , statusCode: res.statusCode
-       }
-       if (res.statusCode !== 200) {
-         callback(msg)
-       }
-       else callback(null, msg)
-     })
-  });
-
-  req.on('error', function(e) {
+  http.request(options, function(res) {
+    parseRes(res, function (err, body) {
+      if (err || res.statusCode !== 200)
+        callback({err: err, msg: body, statusCode: res.statusCode})
+      else callback({msg: body, statusCode: res.statusCode)
+    })
+  })
+  .on('error', function(e) {
     callback(e);
-  });
+  })
+  .write(urlencoded)
+  .end();
 
-    // write data to request body
-  req.write(urlencoded);
-  req.end();
   return this;
 };
 
 Plotly.prototype.signup = function(un, email, callback) {
-  var pack = {'version': version, 'un': un, 'email': email, 'platform':platform}
+  var opts = {}
+    , pack = {'version': version, 'un': un, 'email': email, 'platform':platform}
     , urlencoded = '';
+
+  /*
+   * permit Plotly.signup(options, callback)
+   * where options is {email: [], un: {}, host: host, port: port}.
+   */
+  if (typeof un === 'object' && typeof email === 'function') {
+    opts = un;
+    callback = email;
+    un = opts.un;
+    email = opts.email;
+  }
 
   for (var key in pack) {
     urlencoded += key + "=" + pack[key] + "&"
@@ -131,8 +124,8 @@ Plotly.prototype.signup = function(un, email, callback) {
   urlencoded = urlencoded.substring(0, urlencoded.length - 1)
 
   var options = {
-    host: 'plot.ly',
-    port: 80,
+    host: opts.host || 'plot.ly',
+    port: opts.port || 80,
     path: '/apimkacct',
     method: 'POST',
     headers: {
@@ -141,28 +134,39 @@ Plotly.prototype.signup = function(un, email, callback) {
     }
   };
 
-    var req = http.request(options, function(res) {
-                console.log('STATUS: ' + res.statusCode);
-                console.log('HEADERS: ' + JSON.stringify(res.headers));
-
-                res.on('data', function (chunk) {
-            console.log('Response from Plot.ly: '+'\n'+chunk);
-                });
-
-              });
-
-  req.on('error', function(e) {
-    console.log('problem with request: ' + e.message);
-  });
-
-  // write data to request body
-  req.write(urlencoded);
-  req.end();
-
-  if (callback) {
-    callback();
-  }
+  http.request(options, function (res) {
+    parseRes(res, function (err, body) {
+      if (err || res.statusCode !== 200)
+        callback({err: err, msg: body, statusCode: res.statusCode})
+      else callback({msg: body, statusCode: res.statusCode)
+    }
+  })
+  .on('error', function(err) {
+      callback(err)
+  })
+  .write(urlencoded)
+  .end();
 
   return this;
 
 };
+
+
+function parseRes (res, cb) {
+  var body = ''
+  res.setEncoding('utf8')
+  res.on('data', function (data) {
+    body += data
+    if (body.length > 1e4) {
+      // FLOOD ATTACK OR FAULTY CLIENT, NUKE REQ
+      res.connection.destroy()
+      res.writeHead(413, {'Content-Type': 'text/plain'})
+      res.end("req body too large")
+      return cb("body overflow")
+    }
+  })
+
+  res.on('end', function () {
+    cb(null, body)
+  })
+}
